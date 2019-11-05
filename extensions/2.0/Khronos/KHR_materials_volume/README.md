@@ -14,8 +14,9 @@ Written against the glTF 2.0 spec.
 
 ## Overview
 
-Requires the use of KHR_materials_transmission
 This extension enables volumetric effects and includes parameters to define refraction, absorption and scattering of light within a volume. The thickness of the volume itself can be described either by the geometry (must be a closed surface) or by providing explicit thickness information via parameters in this extension.
+
+**This extension requires the use of KHR_materials_transmission.**
 
 ## Extending Materials
 
@@ -28,8 +29,8 @@ materials: [
   {
     "extensions": {
        "KHR_materials_volume": {
-         "absorptionColor": [ 0.8, 0.1, 0.1 ],
-         "absorptionDistance": 0.5,
+         "attenuationColor": [ 0.8, 0.1, 0.1 ],
+         "attenuationDistance": 0.5,
          "interiorIor": 1.0,
          "useThicknessFromTransmission": true,
          "useThicknessFromVolume": false,
