@@ -188,7 +188,7 @@ geometry_tangent = KHR_materials_anisotropy.anisotropyTexture.rg
 ```
 
 ##### Limitations:
-Because KHR_materials_anisotropy.anisotropyTexture and pbrMetallicRoughness.metallicRoughnessTexture may have different texture transforms, converting to OpenPBR's `specular_roughness_anisotropy` and `specular_roughness` may result in a loss of data.
+Because `KHR_materials_anisotropy.anisotropyTexture` and `pbrMetallicRoughness.metallicRoughnessTexture` may have different texture transforms, converting to OpenPBR's `specular_roughness_anisotropy` and `specular_roughness` may result in a loss of data. With identical transforms, there is no issue.
 
 #### OpenPBR -> glTF
 ```text
@@ -208,38 +208,55 @@ if (using KHR_materials_openpbr) {
 KHR_materials_anisotropy.anisotropyTexture.rg = geometry_tangent
 ```
 ##### Limitations:
-Because anisotropyTexture can contain both strength (roughness) and rotation, having two different transforms between `specular_anisotropy_roughness` and `geometry_tangent` may result in a loss of data.
+Because `anisotropyTexture` can contain both strength (roughness) and rotation, having two different transforms between `specular_anisotropy_roughness` and `geometry_tangent` may result in a loss of data.
 
 ## Transmission slab
 
-OpenPBR separates transmission from surface reflection and can include color, depth, scattering, and thin/thick behavior, while core glTF alpha coverage is not optical transmission.
+OpenPBR provides two slabs that handle the transmission of light through the surface and into the volume. The first is the Transmission slab and the second (see below) is the Subsurface slab. Depending on the state of the `geometry_thin_walled` flag, the behaviour of this slab will change from an infinitely thin slab to a volumetric one. Note that alpha coverage (i.e. opacity) controls visibility; it must not be substituted for transmission.
 
 ### Transmission Weight
-This property requires the work-in-progress glTF extension, `KHR_materials_transmission` (and, for thin-walled surfaces, `ADOBE_materials_thin_transparency`).
+This property requires the glTF extension, `KHR_materials_transmission`.
 
 #### glTF -> OpenPBR
 ```text
-transmission_weight <- KHR_materials_transmission.transmissionFactor
-// If the surface is thin-walled
-transmission_weight <- ADOBE_materials_thin_transparency.transmissionFactor
+transmission_weight <- KHR_materials_transmission.transmission
 ```
 
 #### OpenPBR -> glTF
 ```text
-KHR_materials_transmission.transmissionFactor <- transmission_weight
-// If geometry_thin_walled == true
-ADOBE_materials_thin_transparency.transmissionFactor <- transmission_weight
+KHR_materials_transmission.transmission <- transmission_weight
 ```
 
 ##### Limitations:
-Use the Adobe thin transparency extension only when the OpenPBR material is demonstrably thin-walled. Otherwise bake, approximate, or report data loss. Alpha coverage controls visibility; it must not be substituted for transmission.
+Note that, in glTF, the baseColor tints the transmitted light and in OpenPBR, it does not. See above "Base Weight" section.
 
-### Transmission Volume (Thickness and Attenuation)
-This property requires the work-in-progress glTF extension, `KHR_materials_volume`. IOR is shared with the Specular slab's `IOR` property above.
+### Transmission Color
+In volumetric mode (e.g. `geometry_thin_walled` == 1), this property requires the glTF extension, `KHR_materials_volume`. Note that IOR is shared with the Specular slab's `IOR` property above.
 
 #### glTF -> OpenPBR
 ```text
-// TODO/VERIFY: define how glTF thickness, attenuation color, attenuation distance, and thin-walled semantics map to OpenPBR transmission fields
+extinction_coefficient = -ln(gltf.attenuation_color) / gltf.attenuation_distance
+
+single_scatter_albedo = multiScatterToSingleScatterAlbedo(gltf.multiscatter_color * gltf.scatterStrength)
+scattering_coefficient = extinction_coefficient * single_scatter_albedo
+
+if (KHR_materials_volume.thickness > 0) {
+  transmission_color = KHR_materials_volume.attenuationColor
+  transmission_depth = KHR_materials_volume.attenuationDistance
+
+  if (KHR_materials_scatter.scatterStrength > 0) {
+    extinction_coefficient = -ln(KHR_materials_volume.attenuationColor) / KHR_materials_volume.attenuationDistance
+
+    single_scatter_albedo = multiScatterToSingleScatterAlbedo(KHR_materials_scatter.multiscatterColor * KHR_materials_scatter.scatterStrength)
+    scattering_coefficient = extinction_coefficient * single_scatter_albedo
+    transmission_scatter = scattering_coefficient * KHR_materials_volume.attenuationDistance
+    transmission_scatter_anisotropy = KHR_materials_scatter.scatterAnisotropy
+  }
+} else {
+  transmission_color = baseColor
+  transmission_depth = 0
+}
+
 transmission_depth <- KHR_materials_volume.attenuationDistance
 transmission_color <- KHR_materials_volume.attenuationColor
 ```
