@@ -116,7 +116,7 @@ KHR_materials_diffuse_roughness.diffuseRoughness <- base_diffuse_roughness
 
 ## Specular slab
 
-OpenPBR and glTF have largely compatible specular lobes but glTF requires some extensions for colored specular, non-default IOR, and specular anisotropy. However, specular color has some differences that need to be called out. In glTF, specular color is applied to dielectric materials at normal incidence (i.e. F0) and then transitions to white at glancing angles (i.e. F90). In OpenPBR, dielectrics have specular color applied to both F0 and F90. For metals (i.e. conductors), specular color is ignored in glTF while, in OpenPBR, it is used for the edge tinting using the F82 specular reflectance model. When a glTF contains the `KHR_materials_openpbr` extension, it is assumed that the asset was authored with the OpenPBR definition of specular color and should be interpreted as such.
+OpenPBR and glTF have largely compatible specular lobes but glTF has some differences that need to be called out. In glTF, specular color is applied to dielectric materials at normal incidence (i.e. F0) and then transitions to white at glancing angles (i.e. F90). In OpenPBR, dielectrics have specular color applied to both F0 and F90. For metals (i.e. conductors), specular color is ignored entirely in glTF while, in OpenPBR, it is used for the edge tinting using the F82 specular reflectance model. When a glTF contains the `KHR_materials_openpbr` extension, it is assumed that the asset was authored with the OpenPBR definition of specular color and should be interpreted as such.
 
 ### Specular Weight and Color
 This property requires the glTF extension, `KHR_materials_specular`.
@@ -132,7 +132,7 @@ if (KHR_materials_openpbr exists on this material) {
 ```
 
 ##### Limitations:
-When a glTF does not use the `KHR_materials_openpbr` extension, it is not possible to reproduce the intended dielectric behaviour for F90 in OpenPBR. The best we can do is remove specular color for metals using a mix. Be aware that combining textures from glTF to produce OpenPBR's `specular_color` may result in a loss of data if different texture transforms for these properties are used.
+When a glTF does not use the `KHR_materials_openpbr` extension, it is not possible to reproduce the intended dielectric behaviour for F90 in OpenPBR. The best we can do is remove specular color for metals using a mix. Be aware that combining textures from glTF to produce OpenPBR's `specular_color` may result in a loss of data if different texture transforms or UV sets for these properties are used.
 
 #### OpenPBR -> glTF
 ```text
@@ -188,7 +188,7 @@ geometry_tangent = KHR_materials_anisotropy.anisotropyTexture.rg
 ```
 
 ##### Limitations:
-Because `KHR_materials_anisotropy.anisotropyTexture` and `pbrMetallicRoughness.metallicRoughnessTexture` may have different texture transforms, converting to OpenPBR's `specular_roughness_anisotropy` and `specular_roughness` may result in a loss of data. With identical transforms, there is no issue.
+Because `KHR_materials_anisotropy.anisotropyTexture` and `pbrMetallicRoughness.metallicRoughnessTexture` may have different texture transforms or UV sets, converting to OpenPBR's `specular_roughness_anisotropy` and `specular_roughness` may result in a loss of data. With identical transforms, there is no issue.
 
 #### OpenPBR -> glTF
 ```text
@@ -212,14 +212,57 @@ Because `anisotropyTexture` can contain both strength (roughness) and rotation, 
 
 ## Transmission slab
 
-OpenPBR provides two slabs that handle the transmission of light through the surface and into the volume. The first is the Transmission slab and the second (see below) is the Subsurface slab. Depending on the state of the `geometry_thin_walled` flag, the behaviour of this slab will change from an infinitely thin slab to a volumetric one. Note that alpha coverage (i.e. opacity) controls visibility; it must not be substituted for transmission.
+OpenPBR provides two slabs that handle the transmission of light through the surface and into the volume. The first is the Transmission slab and the second (see below) is the Subsurface slab. Depending on the state of the `geometry_thin_walled` flag, the behaviour of this slab will change from an infinitely thin slab to a volumetric one. Note that alpha coverage (i.e. opacity) controls visibility and must not be substituted for transmission.
 
 ### Transmission Weight
 This property requires the glTF extension, `KHR_materials_transmission`.
 
 #### glTF -> OpenPBR
+The general conversion strategy from glTF to OpenPBR is to use the Transmission slab for glTF volumes rather than the Subsurface slab. The Transmission slab is more fully-featured (e.g. it includes dispersion) than the Suburface slab. The one exception is that, for thin-walled materials, glTF scattering is done via a diffuse transmission lobe. This is the same behaviour as the OpenPBR Subsurface slab when `geometry_thin_walled` is true so we will use the Subsurface slab in this case only.
+
 ```text
-transmission_weight <- KHR_materials_transmission.transmission
+
+function multiToSingleScatter(rgb, scatterAnisotropy):
+    return mapEachChannel(rgb, r => {
+        r = clamp(r, 0, 1)
+        q = 4.09712 + 4.20863*r - sqrt(9.59217 + 41.6808*r + 17.7126 * r * r)
+        return (1 - q * q) / max(1 - scatterAnisotropy * q * q, 1e-7)
+    })
+
+T = KHR_materials_transmission.transmission
+S = KHR_materials_scatter.scatterStrength
+
+if (geometry_thin_walled) {
+  // Split the original transmission into unscattered and scattered parts.
+  Wt = T * (1 - S)
+
+  // OpenPBR subsurface is weighted within the non-transmission portion.
+  Ws = (T * S) / (1 - Wt) if (1 - Wt) > epsilon else 0
+
+  openpbr.transmission_weight = Wt
+  openpbr.subsurface_weight = Ws
+  openpbr.subsurface_color = KHR_materials_scatter.multiscatterColor
+  openpbr.subsurface_scatter_anisotropy = KHR_materials_scatter.scatterAnisotropy
+  openpbr.geometry_thin_walled = true
+  openpbr.transmission_color = baseColor
+} else if (KHR_materials_volume.attenuationColor != WHITE) {
+  openpbr.transmission_weight = T
+  openpbr.geometry_thin_walled = false
+  openpbr.transmission_color = KHR_materials_volume.attenuationColor
+  openpbr.transmission_depth = KHR_materials_volume.attenuationDistance
+  multiScatterAlbedo = S * KHR_materials_scatter.multiScatterColor
+  singleScatterAlbedo = multiToSingleScatter(multiScatterAlbedo, g)
+
+  // Beer-Lambert extinction, expressed as extinction * depth.
+  extinctionTimesDepth = -log(max(C, 1e-7))  // component-wise RGB
+
+  // OpenPBR 1.1 expects scattering coefficient * transmission depth.
+  openpbr.transmission_scatter = singleScatterAlbedo * extinctionTimesDepth
+  openpbr.transmissionScatterAnisotropy = KHR_materials_scatter.scatterAnisotropy
+} else {
+  openpbr.transmission_color = baseColor
+  openpbr.transmission_depth = 0
+}
 ```
 
 #### OpenPBR -> glTF
